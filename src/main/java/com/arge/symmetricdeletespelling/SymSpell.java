@@ -5,6 +5,9 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -13,6 +16,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 import static com.arge.symmetricdeletespelling.DistanceCalc.damerauLevenshteinDistance;
 
@@ -54,12 +58,12 @@ public class SymSpell {
    * For space reduction a item might be either of type DictionaryItem or Int.
    * A DictionaryItem is used for word, word/delete, and delete with multiple suggestions. Int is used for deletes with a single suggestion (the majority of entries).
    */
-  private static HashMap<String, Object> dictionary = new HashMap<String, Object>();
+  private static HashMap<String, Object> dictionary = new HashMap<>();
 
   /**
    * List of unique words. By using the suggestions (Int) as index for this list they are translated into the original String.
    */
-  private static List<String> wordlist = new ArrayList<String>();
+  private static List<String> wordlist = new ArrayList<>();
 
   /**
    * create a non-unique wordlist from sample text
@@ -69,7 +73,7 @@ public class SymSpell {
    * // Provides identical results to Norvigs regex "[a-z]+" for latin characters, while additionally providing compatibility with non-latin characters
    */
   private static Iterable<String> parseWords(String text) {
-    List<String> allMatches = new ArrayList<String>();
+    List<String> allMatches = new ArrayList<>();
     Matcher m = Pattern.compile("[\\w-[\\d_]]+").matcher(text.toLowerCase());
     while (m.find()) {
       allMatches.add(m.group());
@@ -82,24 +86,22 @@ public class SymSpell {
    * every delete entry has a suggestions list, which points to the original term(s) it was created from
    * The dictionary may be dynamically updated (word frequency and new words) at any time by calling createDictionaryEntry
    */
-  private static boolean createDictionaryEntry(String key, String language) {
+  private static boolean createDictionaryEntry(String key) {
     boolean result = false;
     DictionaryItem dictionaryItem = null;
     Object valueObj;
-    valueObj = dictionary.get(language + key);
+    valueObj = dictionary.get(key);
     if (valueObj != null) {
       //int or DictionaryItem? delete existed before word!
       if (valueObj instanceof Integer) {
         int tmp = (Integer) valueObj;
         dictionaryItem = new DictionaryItem();
         dictionaryItem.getSuggestions().add(tmp);
-        dictionary.put(language + key, dictionaryItem);
-      }
-
-      //already exists:
-      //1. word appears several times
-      //2. word1==deletes(word2) 
-      else {
+        dictionary.put(key, dictionaryItem);
+      } else {
+        //already exists:
+        //1. word appears several times
+        //2. word1==deletes(word2)
         dictionaryItem = (DictionaryItem) valueObj;
       }
 
@@ -110,7 +112,7 @@ public class SymSpell {
     } else if (wordlist.size() < Integer.MAX_VALUE) {
       dictionaryItem = new DictionaryItem();
       dictionaryItem.setCount(dictionaryItem.getCount() + 1);
-      dictionary.put(language + key, dictionaryItem);
+      dictionary.put(key, dictionaryItem);
 
       if (key.length() > maxlength) {
         maxlength = key.length();
@@ -131,25 +133,24 @@ public class SymSpell {
       result = true;
 
       //create deletes
-      for (String delete : edit(key, 0, new HashSet<String>())) {
+      for (String delete : edit(key, 0, new HashSet<>())) {
         Object value2;
-        value2 = dictionary.get(language + delete);
+        value2 = dictionary.get(delete);
         if (value2 != null) {
-          //already exists:
-          //1. word1==deletes(word2) 
-          //2. deletes(word1)==deletes(word2) 
-          //int or DictionaryItem? single delete existed before!
           if (value2 instanceof Integer) {
             //transformes int to DictionaryItem
             int tmp = (Integer) value2;
             DictionaryItem di = new DictionaryItem();
             di.getSuggestions().add(tmp);
-            dictionary.put(language + delete, di);
-            if (!di.getSuggestions().contains(keyint)) addLowestDistance(di, key, keyint, delete);
-          } else if (!((DictionaryItem) value2).getSuggestions().contains(keyint))
+            dictionary.put(delete, di);
+            if (!di.getSuggestions().contains(keyint)) {
+              addLowestDistance(di, key, keyint, delete);
+            }
+          } else if (!((DictionaryItem) value2).getSuggestions().contains(keyint)) {
             addLowestDistance((DictionaryItem) value2, key, keyint, delete);
+          }
         } else {
-          dictionary.put(language + delete, keyint);
+          dictionary.put(delete, keyint);
         }
 
       }
@@ -158,7 +159,7 @@ public class SymSpell {
   }
 
   //create a frequency dictionary from a corpus
-  private static void createDictionary(String corpus, String language) throws IOException {
+  private static void createDictionary(String corpus) throws IOException {
     File f = new File(corpus);
     if (!(f.exists() && !f.isDirectory())) {
       System.out.println("File not found: " + corpus);
@@ -166,47 +167,35 @@ public class SymSpell {
     }
 
     System.out.println("Creating dictionary ...");
-    long startTime = System.currentTimeMillis();
-    long wordCount = 0;
 
-    BufferedReader br = null;
-    try {
-      br = new BufferedReader(new FileReader(corpus));
+    try (BufferedReader br = new BufferedReader(new FileReader(corpus))) {
       String line;
       while ((line = br.readLine()) != null) {
         for (String key : parseWords(line)) {
-          if (createDictionaryEntry(key, language)) {
-            wordCount++;
-          }
+          createDictionaryEntry(key);
         }
       }
-    } catch (Exception e) {
-      // TODO Auto-generated catch block
-      e.printStackTrace();
-    } finally {
-      br.close();
     }
-    //wordlist.TrimExcess();
-    long endTime = System.currentTimeMillis();
-    System.out.println("\rDictionary: " + wordCount + " words, " + dictionary.size() + " entries, edit distance=" + editDistanceMax + " in " + (endTime - startTime) + "ms ");
+
+    System.out.println("Dictionary created");
   }
 
   //save some time and space
   private static void addLowestDistance(DictionaryItem item, String suggestion, int suggestionint, String delete) {
-    //remove all existing suggestions of higher distance, if verbose<2
-    //index2word
-    //TODO check
-    if ((item.getSuggestions().size() > 0) && (wordlist.get(item.getSuggestions().get(0)).length() - delete.length() > suggestion.length() - delete.length())) {
-      item.getSuggestions().clear();
-    }
-    //do not add suggestion of higher distance than existing, if verbose<2
-    if ((item.getSuggestions().size() == 0) || (wordlist.get(item.getSuggestions().get(0)).length() - delete.length() >= suggestion.length() - delete.length())) {
+    int deleteLength = delete.length();
+    int suggestionLength = suggestion.length();
+    if (!item.getSuggestions().isEmpty()) {
+      if (wordlist.get(item.getSuggestions().get(0)).length() - deleteLength > suggestionLength - deleteLength) {
+        item.getSuggestions().clear();
+      }
+    } else if (item.getSuggestions().isEmpty() || wordlist.get(item.getSuggestions().get(0)).length() - deleteLength >= suggestionLength - deleteLength) {
       item.getSuggestions().add(suggestionint);
     }
   }
 
-  //inexpensive and language independent: only deletes, no transposes + replaces + inserts
-  //replaces and inserts are expensive and language dependent (Chinese has 70,000 Unicode Han characters)
+  /* inexpensive and language independent: only deletes, no transposes + replaces + inserts
+   * replaces and inserts are expensive and language dependent (Chinese has 70,000 Unicode Han characters)
+   */
   private static HashSet<String> edit(String word, int editDistance, HashSet<String> deletes) {
     editDistance++;
     if (word.length() > 1) {
@@ -222,16 +211,29 @@ public class SymSpell {
     return deletes;
   }
 
+  /**
+   * check in dictionary for existence and frequency; sort by ascending edit distance, then by descending word frequency
+   * /*
+   * True Damerau-Levenshtein Edit Distance: adjust distance, if both distances>0
+   * We allow simultaneous edits (deletes) of editDistanceMax on on both the dictionary and the input term.
+   * For replaces and adjacent transposes the resulting edit distance stays <= editDistanceMax.
+   * For inserts and deletes the resulting edit distance might exceed editDistanceMax.
+   * To prevent suggestions of a higher edit distance, we need to calculate the resulting edit distance, if there are simultaneous edits on both sides.
+   * Example: (bank==bnak and bank==bink, but bank!=kanb and bank!=xban and bank!=baxn for editDistanceMaxe=1)
+   * Two deletes on each side of a pair makes them all equal, but the first two pairs have edit distance=1, the others edit distance=2.
+   */
+
   private static List<SuggestItem> lookup(String input, String language, int editDistanceMax) {
     //save some time
-    if (input.length() - editDistanceMax > maxlength)
-      return new ArrayList<SuggestItem>();
+    if (input.length() - editDistanceMax > maxlength) {
+      return new ArrayList<>();
+    }
 
-    List<String> candidates = new ArrayList<String>();
-    HashSet<String> hashset1 = new HashSet<String>();
+    List<String> candidates = new ArrayList<>();
+    HashSet<String> hashset1 = new HashSet<>();
 
-    List<SuggestItem> suggestions = new ArrayList<SuggestItem>();
-    HashSet<String> hashset2 = new HashSet<String>();
+    List<SuggestItem> suggestions = new ArrayList<>();
+    HashSet<String> hashset2 = new HashSet<>();
 
     Object valueObject;
 
@@ -241,14 +243,8 @@ public class SymSpell {
     while (!candidates.isEmpty()) {
       String candidate = candidates.get(0);
       candidates.remove(0);
-
-      //save some time
-      //early termination
-      //suggestion distance=candidate.distance... candidate.distance+editDistanceMax                
-      //if canddate distance is already higher than suggestion distance, than there are no better suggestions to be expected
-
-      //label for c# goto replacement
-      if ((!suggestions.isEmpty()) && (input.length() - candidate.length() > suggestions.get(0).getDistance())) {
+      int candidateLength = candidate.length();
+      if (!suggestions.isEmpty() && (input.length() - candidateLength > suggestions.get(0).getDistance())) {
         break;
       }
 
@@ -256,9 +252,11 @@ public class SymSpell {
       valueObject = dictionary.get(language + candidate);
       if (valueObject != null) {
         DictionaryItem value = new DictionaryItem();
-        if (valueObject instanceof Integer)
+        if (valueObject instanceof Integer) {
           value.getSuggestions().add((Integer) valueObject);
-        else value = (DictionaryItem) valueObject;
+        } else {
+          value = (DictionaryItem) valueObject;
+        }
 
         //if count>0 then candidate entry is correct dictionary term, not only delete item
         if ((value.getCount() > 0) && hashset2.add(candidate)) {
@@ -266,10 +264,10 @@ public class SymSpell {
           SuggestItem si = new SuggestItem();
           si.setTerm(candidate);
           si.setCount(value.getCount());
-          si.setDistance(input.length() - candidate.length());
+          si.setDistance(input.length() - candidateLength);
           suggestions.add(si);
           //early termination
-          if ((input.length() - candidate.length() == 0)) {
+          if ((input.length() - candidateLength == 0)) {
             break;
           }
         }
@@ -283,39 +281,36 @@ public class SymSpell {
           //TODO
           String suggestion = wordlist.get(suggestionint);
           if (hashset2.add(suggestion)) {
-              /*
-               True Damerau-Levenshtein Edit Distance: adjust distance, if both distances>0
-              We allow simultaneous edits (deletes) of editDistanceMax on on both the dictionary and the input term.
-              For replaces and adjacent transposes the resulting edit distance stays <= editDistanceMax.
-              For inserts and deletes the resulting edit distance might exceed editDistanceMax.
-              To prevent suggestions of a higher edit distance, we need to calculate the resulting edit distance, if there are simultaneous edits on both sides.
-              Example: (bank==bnak and bank==bink, but bank!=kanb and bank!=xban and bank!=baxn for editDistanceMaxe=1)
-              Two deletes on each side of a pair makes them all equal, but the first two pairs have edit distance=1, the others edit distance=2.
-               */
             int distance = 0;
             if (!suggestion.equals(input)) {
-              if (suggestion.length() == candidate.length()) distance = input.length() - candidate.length();
-              else if (input.length() == candidate.length()) distance = suggestion.length() - candidate.length();
-              else {
+              if (suggestion.length() == candidateLength) {
+                distance = input.length() - candidateLength;
+              } else if (input.length() == candidateLength) {
+                distance = suggestion.length() - candidateLength;
+              } else {
                 //common prefixes and suffixes are ignored, because this speeds up the Damerau-levenshtein-Distance calculation without changing it.
                 int ii = 0;
                 int jj = 0;
-                while ((ii < suggestion.length()) && (ii < input.length()) && (suggestion.charAt(ii) == input.charAt(ii)))
+                while ((ii < suggestion.length()) && (ii < input.length()) && (suggestion.charAt(ii) == input.charAt(ii))) {
                   ii++;
-                while ((jj < suggestion.length() - ii) && (jj < input.length() - ii) && (suggestion.charAt(suggestion.length() - jj - 1) == input.charAt(input.length() - jj - 1)))
+                }
+                while ((jj < suggestion.length() - ii) && (jj < input.length() - ii) && (suggestion.charAt(suggestion.length() - jj - 1) == input.charAt(input.length() - jj - 1))) {
                   jj++;
-                if ((ii > 0) || (jj > 0)) {
+                }
+                if (ii > 0 || jj > 0) {
                   distance = damerauLevenshteinDistance(suggestion.substring(ii, suggestion.length() - jj), input.substring(ii, input.length() - jj));
-                } else distance = damerauLevenshteinDistance(suggestion, input);
+                } else {
+                  distance = damerauLevenshteinDistance(suggestion, input);
+                }
               }
             }
 
             //save some time.
-            if ((!suggestions.isEmpty()) && (suggestions.get(0).getDistance() > distance)) {
+            if (!suggestions.isEmpty() && (suggestions.get(0).getDistance() > distance)) {
               suggestions.clear();
             }
             //do not process higher distances than those already found, if verbose<2
-            if ((!suggestions.isEmpty()) && (distance > suggestions.get(0).getDistance())) {
+            if (!suggestions.isEmpty() && (distance > suggestions.get(0).getDistance())) {
               continue;
             }
 
@@ -336,14 +331,14 @@ public class SymSpell {
       //add edits
       //derive edits (deletes) from candidate (input) and add them to candidates list
       //this is a recursive process until the maximum edit distance has been reached
-      if (input.length() - candidate.length() < editDistanceMax) {
+      if (input.length() - candidateLength < editDistanceMax) {
         //save some time
         //do not create edits with edit distance smaller than suggestions already found
-        if ((!suggestions.isEmpty()) && (input.length() - candidate.length() >= suggestions.get(0).getDistance())) {
+        if (!suggestions.isEmpty() && (input.length() - candidateLength >= suggestions.get(0).getDistance())) {
           continue;
         }
 
-        for (int i = 0; i < candidate.length(); i++) {
+        for (int i = 0; i < candidateLength; i++) {
           String delete = candidate.substring(0, i) + candidate.substring(i + 1);
           if (hashset1.add(delete)) {
             candidates.add(delete);
@@ -352,95 +347,51 @@ public class SymSpell {
       }
     } //end while
 
-    //sort by ascending edit distance, then by descending word frequency
+    sortAscDistanceAndDescFreq(suggestions);
 
+    if (suggestions.size() > 1) {
+      return suggestions.subList(0, 1);
+    } else {
+      return suggestions;
+    }
+  }
+
+
+  /**
+   * sort by ascending edit distance, then by descending word frequency
+   */
+  private static void sortAscDistanceAndDescFreq(List<SuggestItem> suggestions) {
     Collections.sort(suggestions, new Comparator<SuggestItem>() {
       public int compare(SuggestItem x, SuggestItem y) {
         return ((2 * x.getDistance() - y.getDistance()) > 0 ? 1 : 0) - ((x.getCount() - y.getCount()) > 0 ? 1 : 0);
       }
     });
-
-    if ((suggestions.size() > 1)) {
-      return suggestions.subList(0, 1);
-    } else return suggestions;
   }
 
   private static void correct(String input, String language) {
-    List<SuggestItem> suggestions = null;
-
-        /*
-        //Benchmark: 1000 x lookup
-        Stopwatch stopWatch = new Stopwatch();
-        stopWatch.Start();
-        for (int i = 0; i < 1000; i++)
-        {
-            suggestions = lookup(input,language,editDistanceMax);
-        }
-        stopWatch.Stop();
-        Console.WriteLine(stopWatch.ElapsedMilliseconds.ToString());
-        */
-
-
-    //check in dictionary for existence and frequency; sort by ascending edit distance, then by descending word frequency
-    suggestions = lookup(input, language, editDistanceMax);
-
-    //display term and frequency
-  /*  for (SuggestItem suggestion : suggestions) {
-            System.out.println(
-             		"Term:		" + suggestion.getTerm() +
-             		"\nDistance:\t" + suggestion.getDistance() +
-             		"\nCount:	\t" + suggestion.getCount());
-    }*/
-    System.out.println(suggestions.size() + " suggestions");
-    suggestions.forEach(item -> System.out.println(item.getTerm()));
-
+    List<SuggestItem> suggestions = lookup(input, language, editDistanceMax);
+    suggestions.forEach(item -> System.out.println("Suggestion: " + item.getTerm()));
   }
 
-  private static void readFromStdIn() {
+  private static void readFromStdIn() throws IOException {
     String word;
     BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
-    try {
-      while ((word = br.readLine()) != null) {
-        correct(word, "");
-      }
-    } catch (IOException e) {
-      // TODO Auto-generated catch block
-      e.printStackTrace();
+    while ((word = br.readLine()) != null) {
+      correct(word, "");
     }
   }
 
+  /**
+   * Create the dictionary from a sample corpus
+   * e.g. http://norvig.com/big.txt , or any other large text corpus
+   * The dictionary may contain vocabulary from different languages.
+   * If you use mixed vocabulary use the language parameter in correct() and createDictionary() accordingly.
+   * You may use createDictionaryEntry() to update a (self learning) dictionary incrementally
+   * To extend spelling correction beyond single words to phrases (e.g. correcting "unitedkingom" to "united kingdom") simply add those phrases with createDictionaryEntry().
+   */
   public static void main(String[] args) throws IOException {
-
-    //Create the dictionary from a sample corpus
-    //e.g. http://norvig.com/big.txt , or any other large text corpus
-    //The dictionary may contain vocabulary from different languages. 
-    //If you use mixed vocabulary use the language parameter in correct() and createDictionary() accordingly.
-    //You may use createDictionaryEntry() to update a (self learning) dictionary incrementally
-    //To extend spelling correction beyond single words to phrases (e.g. correcting "unitedkingom" to "united kingdom") simply add those phrases with createDictionaryEntry().
-    createDictionary(getFileFromResources("referenceNamesAndQuarters50k.txt"), "");
+    createDictionary(getFileFromResources("referenceNamesAndQuarters50k.txt"));
     readFromStdIn();
-
-
-    /**
-     * sefer
-     */
-  /*  String word;
-    BufferedReader br = null;
-    try {
-      File file = new File(getFileFromResources("referenceTowns1k.txt"));
-      br = new BufferedReader(new FileReader(file));
-      while ((word = br.readLine()) != null) {
-        System.out.println("Aranan: " + word);
-        correct(word, "");
-      }
-    } catch (Exception e) {
-
-    } finally {
-      if (br != null) {
-        br.close();
-      }
-    }
-*/
   }
 
   private static String getFileFromResources(String fileName) {
